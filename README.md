@@ -89,13 +89,49 @@ sets don't need handlers) — then a tiny `cmd` prints `Spec().OpenAPI(...)`.
 | `Also(status, desc)` · `AlsoJSON[T](status, desc)` | an extra status, without / with a body |
 | `RespHeader(name, desc)` | a header on the success response |
 | `Error(status, code, msg)` | a documented failure |
-| `Query` / `Header` / `PathParam` | parameters |
+| `Params[T]()` | path / query / header parameters, typed, from the struct the handler binds |
+| `Query` / `Header` / `PathParam` | a single parameter, as a plain string |
 | `Secured()` | requires a bearer session |
 | `DependsOn(ids...)` | endpoints a QA run must call first |
 | `Compose(opts...)` | bundle options (e.g. a middleware's own docs) |
 
 `Request[T]` / `Response[T]` are generic: `reflect.TypeFor[T]()` binds the schema
 to the exact struct at compile time — no annotations.
+
+### Parameters from the bound struct
+
+`Params[T]` does for parameters what `Request[T]` does for the body: document
+the struct the handler already binds, so a renamed parameter can't leave the
+spec behind.
+
+```go
+type ListUsersParams struct {
+    Org   string `param:"org"   doc:"organisation slug"`
+    Limit int    `query:"limit" validate:"min=1,max=100" doc:"page size"`
+    Role  string `query:"role"  validate:"omitempty,oneof=admin member"`
+}
+
+api.GET("/orgs/:org/users", func(c echo.Context) error {
+    var p ListUsersParams
+    if err := c.Bind(&p); err != nil { … }   // the same struct…
+    …
+}, []goenax.Option{
+    goenax.Params[ListUsersParams](),         // …documents the parameters
+    …
+})
+```
+
+| Tag | Location | Router |
+| --- | -------- | ------ |
+| `param:"…"` / `uri:"…"` / `path:"…"` | path (always required) | Echo / Gin / net/http |
+| `query:"…"` / `form:"…"` | query | Echo, net/http / Gin |
+| `header:"…"` | header | all |
+
+Types and `validate` rules become the schema (`limit` above is an integer,
+1–100; `role` an enum). Query and header parameters are optional unless
+`validate:"required"`. `doc:"…"` is the description; untagged fields are ignored
+and embedded structs are flattened, so shared pagination can be one embedded
+struct.
 
 ---
 
@@ -130,6 +166,18 @@ If your API returns something else, give its type once:
 reg.OpenAPI(goenax.Info{Title: "My API", Version: "1.0.0",
     ErrorType: reflect.TypeFor[APIError]()})
 ```
+
+---
+
+## Examples
+
+- **Runnable demo** — `go run ./examples/echo`, then open
+  <http://localhost:8080/api/docs> (also `/api/scalar`, `/api/redoc`). It
+  shows `Request`/`Response`, `Params[T]`, `Info.ErrorType`, `Validate` and
+  `Coverage` on boot, and the live docs.
+- **API examples** — [`example_test.go`](./example_test.go), also rendered on
+  [pkg.go.dev](https://pkg.go.dev/github.com/Lev2098/Goenax). They run as tests,
+  so they can't go stale.
 
 ---
 
@@ -220,6 +268,22 @@ Postman and TypeScript come from the emitted OpenAPI via `openapi-to-postman` an
 ---
 
 ## Changelog
+
+### Unreleased
+
+**New**
+
+- `Params[T]()` — typed path / query / header parameters from the struct the
+  handler binds (Echo, Gin and net/http binding tags), with `doc:"…"`
+  descriptions. `Validate` flags a parameter declared twice.
+- Runnable demo in `examples/echo`; godoc examples in `example_test.go`.
+
+**Fixed**
+
+- An unexported embedded struct was dropped from body schemas, though
+  `encoding/json` promotes its fields.
+- Generated examples ignored the schema's bounds (`0` for `min=1`, `"example"`
+  for `max=3`), so Swagger "Try it out" sent invalid requests by default.
 
 ### v0.2.0 — 2026-10-07
 

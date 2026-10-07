@@ -3,6 +3,7 @@ package echoadapter_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -132,5 +133,41 @@ func TestRouter_DocsServesSpecAndStaysOutOfIt(t *testing.T) {
 	und, unm := reg.Coverage(echoadapter.Routes(e))
 	if len(und) != 0 || len(unm) != 0 {
 		t.Errorf("coverage undocumented=%v unmounted=%v, want both empty", und, unm)
+	}
+}
+
+type listQuery struct {
+	Org   string `param:"org"`
+	Limit int    `query:"limit" validate:"max=100"`
+}
+
+// The struct the handler binds is the one Params documents — one source for
+// both, so a renamed field cannot leave the spec behind.
+func TestRouter_ParamsStructBindsAndDocuments(t *testing.T) {
+	e := echo.New()
+	reg := goenax.New()
+	api := echoadapter.New(e.Group("/api"), reg, "/api")
+
+	api.GET("/orgs/:org/users", func(c echo.Context) error {
+		var q listQuery
+		if err := c.Bind(&q); err != nil {
+			return err
+		}
+
+		return c.String(http.StatusOK, q.Org+"/"+strconv.Itoa(q.Limit))
+	}, []goenax.Option{
+		goenax.Summary("s"), goenax.Description("d"), goenax.Owner("#o"), goenax.Tags("T"),
+		goenax.Params[listQuery](),
+	})
+
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/orgs/acme/users?limit=5", nil))
+
+	if rec.Body.String() != "acme/5" {
+		t.Fatalf("bound %q, want acme/5", rec.Body.String())
+	}
+
+	if errs := reg.Validate(); len(errs) != 0 {
+		t.Errorf("Validate() = %v", errs)
 	}
 }

@@ -18,12 +18,13 @@ type ErrorSpec struct {
 	Message string // human-readable example message
 }
 
-// Param is a query (or, later, path) parameter.
+// Param is a path, query or header parameter.
 type Param struct {
 	Name     string
-	In       string // "query"
+	In       string // "path", "query" or "header"
 	Required bool
 	Desc     string
+	Schema   *Schema // nil = a plain string (Query/Header/PathParam); set by Params[T]
 }
 
 // ExtraResponse is an additional documented response (e.g. a 202 alternative to
@@ -133,17 +134,18 @@ func Secured() Option {
 	return func(e *Endpoint) { e.Secured = true }
 }
 
-// Query documents a query parameter.
+// Query documents a query parameter as a plain string. To document typed
+// parameters from the struct the handler binds, use Params[T].
 func Query(name string, required bool, desc string) Option {
 	return func(e *Endpoint) {
-		e.Params = append(e.Params, Param{Name: name, In: "query", Required: required, Desc: desc})
+		e.Params = append(e.Params, Param{Name: name, In: inQuery, Required: required, Desc: desc})
 	}
 }
 
 // Header documents a request header (e.g. X-Recaptcha-Token).
 func Header(name string, required bool, desc string) Option {
 	return func(e *Endpoint) {
-		e.Params = append(e.Params, Param{Name: name, In: "header", Required: required, Desc: desc})
+		e.Params = append(e.Params, Param{Name: name, In: inHeader, Required: required, Desc: desc})
 	}
 }
 
@@ -151,7 +153,7 @@ func Header(name string, required bool, desc string) Option {
 // in the route path).
 func PathParam(name, desc string) Option {
 	return func(e *Endpoint) {
-		e.Params = append(e.Params, Param{Name: name, In: "path", Required: true, Desc: desc})
+		e.Params = append(e.Params, Param{Name: name, In: inPath, Required: true, Desc: desc})
 	}
 }
 

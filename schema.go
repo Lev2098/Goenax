@@ -157,7 +157,7 @@ func (b *builder) structSchema(t reflect.Type) Schema {
 	s := Schema{Type: typeObject, Properties: map[string]*Schema{}}
 
 	for f := range t.Fields() {
-		if !f.IsExported() {
+		if !f.IsExported() && !embeddedStruct(f) {
 			continue
 		}
 
@@ -168,7 +168,7 @@ func (b *builder) structSchema(t reflect.Type) Schema {
 
 		// Embedded struct fields without their own json tag are flattened, so we
 		// build them inline (as properties) rather than as a $ref.
-		if f.Anonymous && deref(f.Type).Kind() == reflect.Struct && f.Tag.Get("json") == "" {
+		if embeddedStruct(f) && (f.Tag.Get("json") == "" || !f.IsExported()) {
 			embedded := b.structSchema(deref(f.Type))
 			maps.Copy(s.Properties, embedded.Properties)
 			s.Required = append(s.Required, embedded.Required...)
@@ -369,12 +369,33 @@ func setExample(s *Schema, tagVal string) {
 			ex += strings.Repeat("x", *s.MinLength-len(ex)) // keep the example valid + deterministic
 		}
 
+		if s.MaxLength != nil && len(ex) > *s.MaxLength {
+			ex = ex[:*s.MaxLength]
+		}
+
 		s.Example = ex
-	case s.Type == typeInteger || s.Type == typeNumber:
-		s.Example = 0
+	case s.Type == typeInteger:
+		s.Example = int64(clampExample(s))
+	case s.Type == typeNumber:
+		s.Example = clampExample(s)
 	case s.Type == typeBoolean:
 		s.Example = false
 	}
+}
+
+// clampExample is 0 moved inside the schema's minimum/maximum, so a generated
+// request (Swagger "Try it out", Postman) is valid out of the box.
+func clampExample(s *Schema) float64 {
+	ex := 0.0
+	if s.Minimum != nil && ex < *s.Minimum {
+		ex = *s.Minimum
+	}
+
+	if s.Maximum != nil && ex > *s.Maximum {
+		ex = *s.Maximum
+	}
+
+	return ex
 }
 
 func stringExample(format string) string {
@@ -416,6 +437,13 @@ func parseJSONTag(f reflect.StructField) (name string, omitempty, skip bool) {
 	}
 
 	return name, omitempty, false
+}
+
+// embeddedStruct reports whether f is an embedded struct (or *struct). Like
+// encoding/json, its exported fields are promoted into the parent even when the
+// embedded type itself is unexported (`type page struct{…}` embedded as page).
+func embeddedStruct(f reflect.StructField) bool {
+	return f.Anonymous && deref(f.Type).Kind() == reflect.Struct
 }
 
 func deref(t reflect.Type) reflect.Type {
