@@ -67,9 +67,33 @@ func (r *Router) POST(path string, h echo.HandlerFunc, opts []goenax.Option, mw 
 	r.Handle(http.MethodPost, path, h, opts, mw...)
 }
 
+// PUT mounts and records a PUT route.
+func (r *Router) PUT(path string, h echo.HandlerFunc, opts []goenax.Option, mw ...echo.MiddlewareFunc) {
+	r.Handle(http.MethodPut, path, h, opts, mw...)
+}
+
+// PATCH mounts and records a PATCH route.
+func (r *Router) PATCH(path string, h echo.HandlerFunc, opts []goenax.Option, mw ...echo.MiddlewareFunc) {
+	r.Handle(http.MethodPatch, path, h, opts, mw...)
+}
+
 // DELETE mounts and records a DELETE route.
 func (r *Router) DELETE(path string, h echo.HandlerFunc, opts []goenax.Option, mw ...echo.MiddlewareFunc) {
 	r.Handle(http.MethodDelete, path, h, opts, mw...)
+}
+
+// Docs mounts a goenax.Docs handler at path and path+"/" (the UI) and
+// path+"/openapi.json" (the spec). The docs routes are not recorded in the spec and are ignored by
+// Coverage. Pass middleware to guard them, e.g. auth in production:
+//
+//	api.Docs("/docs", goenax.Docs(reg, info), requireStaff)
+func (r *Router) Docs(path string, docs http.Handler, mw ...echo.MiddlewareFunc) {
+	h := echo.WrapHandler(docs)
+
+	for _, p := range []string{path, path + "/", path + "/" + goenax.SpecFile} {
+		r.echo.Add(http.MethodGet, p, h, mw...)
+		r.reg.Ignore(http.MethodGet, r.prefix+p)
+	}
 }
 
 // Routes lists the routes registered on an Echo instance as goenax.Route pairs,

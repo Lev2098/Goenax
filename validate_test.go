@@ -108,3 +108,33 @@ func TestValidate_PathParamMismatch(t *testing.T) {
 		t.Fatalf("expected {id} undeclared + extra-not-in-path, got %q", joined)
 	}
 }
+
+func TestValidate_StatusConflicts(t *testing.T) {
+	r := New()
+	r.Add(Define("POST", "/x",
+		Summary("s"), Description("d"), Owner("#o"), Tags("T"),
+		Response[struct{}](200),
+		Also(200, "also ok"),                                // clashes with success
+		Error(400, "a", "first"), Error(400, "b", "second"), // same-status errors merge: fine
+	))
+
+	errs := r.Validate()
+	if len(errs) != 1 || len(errs[0].Problems) != 1 ||
+		errs[0].Problems[0] != "status 200 declared by more than one response" {
+		t.Errorf("Validate() = %v, want only the 200 conflict", errs)
+	}
+}
+
+func TestValidate_OperationIDCollision(t *testing.T) {
+	meta := []Option{Summary("s"), Description("d"), Owner("#o"), Tags("T")}
+
+	r := New()
+	r.Add(Define("GET", "/a-b", meta...))
+	r.Add(Define("GET", "/a_b", meta...))
+
+	errs := r.Validate()
+	if len(errs) != 1 || errs[0].Endpoint != "GET /a_b" ||
+		errs[0].Problems[0] != "operationId get_a_b collides with GET /a-b" {
+		t.Errorf("Validate() = %v", errs)
+	}
+}

@@ -15,11 +15,15 @@ const (
 	bearerScheme = "bearerAuth"
 )
 
-// Info is the OpenAPI `info` block plus the servers the API is reachable at.
+// Info is the OpenAPI `info` block plus document-wide settings.
 type Info struct {
 	Title   string
 	Version string
 	Servers []Server
+
+	// ErrorType is the Go type of the JSON body every documented Error returns,
+	// e.g. reflect.TypeFor[apiError](). Nil means the default { "message": … }.
+	ErrorType reflect.Type
 }
 
 // Server is one OpenAPI server entry.
@@ -44,15 +48,23 @@ func (r *Registry) OpenAPI(info Info) ([]byte, error) {
 		names:   map[reflect.Type]string{},
 		seen:    map[reflect.Type]bool{},
 	}
+	errSchema := defaultErrorSchema()
+
+	if info.ErrorType != nil {
+		s := b.of(info.ErrorType)
+		errSchema = &s
+	}
 	tagSet := map[string]struct{}{}
 	secured := false
 
-	for _, e := range r.endpoints {
+	eps := r.snapshot()
+
+	for _, e := range eps {
 		if doc.Paths[e.Path] == nil {
 			doc.Paths[e.Path] = map[string]operation{}
 		}
 
-		doc.Paths[e.Path][strings.ToLower(e.Method)] = b.operationFor(e)
+		doc.Paths[e.Path][strings.ToLower(e.Method)] = b.operationFor(e, errSchema)
 
 		if e.Secured {
 			secured = true
@@ -74,7 +86,7 @@ func (r *Registry) OpenAPI(info Info) ([]byte, error) {
 	return out, nil
 }
 
-func (b *builder) operationFor(e Endpoint) operation {
+func (b *builder) operationFor(e Endpoint, errSchema *Schema) operation {
 	op := operation{
 		Tags:        e.Tags,
 		Summary:     e.Summary,
@@ -121,10 +133,24 @@ func (b *builder) operationFor(e Endpoint) operation {
 		op.Responses[strconv.Itoa(ex.Status)] = resp
 	}
 
+	// Several errors may share a status (e.g. 400 "validation" and 400
+	// "bad_input"); OpenAPI has one response per status, so merge their texts.
+	var order []int
+
+	descs := map[int][]string{}
+
 	for _, er := range e.Errors {
-		op.Responses[strconv.Itoa(er.Status)] = response{
-			Description: errorDescription(er),
-			Content:     jsonContent(errorSchema()),
+		if _, ok := descs[er.Status]; !ok {
+			order = append(order, er.Status)
+		}
+
+		descs[er.Status] = append(descs[er.Status], errorDescription(er))
+	}
+
+	for _, status := range order {
+		op.Responses[strconv.Itoa(status)] = response{
+			Description: strings.Join(descs[status], "; "),
+			Content:     jsonContent(errSchema),
 		}
 	}
 
@@ -139,8 +165,9 @@ func errorDescription(er ErrorSpec) string {
 	return er.Code
 }
 
-// errorSchema is the shape of our JSON error bodies: { "message": "..." }.
-func errorSchema() *Schema {
+// defaultErrorSchema is the error body used when Info.ErrorType is not set:
+// { "message": "..." }.
+func defaultErrorSchema() *Schema {
 	return &Schema{
 		Type:       typeObject,
 		Properties: map[string]*Schema{"message": {Type: typeString}},
@@ -171,10 +198,12 @@ func paramsOf(params []Param) []parameter {
 	return out
 }
 
-// operationID is a stable, unique id per method+path, e.g.
-// post_api_auth_change_password.
+// operationID is a stable id per method+path, e.g.
+// post_api_auth_change_password or get_api_users_id for /api/users/{id}.
+// Braces are dropped so code generators get a valid identifier.
 func operationID(method, path string) string {
 	id := strings.Trim(path, "/")
+	id = strings.NewReplacer("{", "", "}", "").Replace(id)
 	id = strings.ReplaceAll(id, "/", "_")
 	id = strings.ReplaceAll(id, "-", "_")
 

@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
-	"strings"
 )
 
 var (
@@ -61,8 +61,8 @@ func checkValue(s Schema, v any, path string) error {
 	}
 
 	if len(s.Enum) > 0 {
-		if str, ok := v.(string); !ok || !slices.Contains(s.Enum, str) {
-			return fmt.Errorf("%s: %v is not one of %s: %w", path, v, strings.Join(s.Enum, ", "), errEnum)
+		if !slices.ContainsFunc(s.Enum, func(want any) bool { return enumMatch(want, v) }) {
+			return fmt.Errorf("%s: %v is not one of %v: %w", path, v, s.Enum, errEnum)
 		}
 
 		return nil
@@ -77,8 +77,15 @@ func checkValue(s Schema, v any, path string) error {
 		return wantJSON[string](v, path, "string")
 	case typeBoolean:
 		return wantJSON[bool](v, path, "boolean")
-	case typeInteger, typeNumber:
-		return wantJSON[float64](v, path, "number") // JSON numbers decode to float64
+	case typeInteger:
+		f, ok := v.(float64) // JSON numbers decode to float64
+		if !ok || f != math.Trunc(f) {
+			return fmt.Errorf("%s: want integer, got %v: %w", path, v, errType)
+		}
+
+		return nil
+	case typeNumber:
+		return wantJSON[float64](v, path, "number")
 	default:
 		return nil // empty schema means "any"
 	}
@@ -152,6 +159,23 @@ func checkArray(s Schema, v any, path string) error {
 	}
 
 	return nil
+}
+
+// enumMatch compares a decoded JSON value with a typed enum entry. JSON numbers
+// decode to float64 while integer enums hold int64, so numbers compare by value.
+func enumMatch(want, got any) bool {
+	switch w := want.(type) {
+	case int64:
+		g, ok := got.(float64)
+
+		return ok && g == float64(w)
+	case float64:
+		g, ok := got.(float64)
+
+		return ok && g == w
+	default:
+		return want == got
+	}
 }
 
 func wantJSON[T any](v any, path, name string) error {

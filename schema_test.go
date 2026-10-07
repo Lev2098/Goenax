@@ -1,6 +1,7 @@
 package goenax
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -131,7 +132,7 @@ func TestSchemaFor_ValidateTags(t *testing.T) {
 		t.Errorf("password minLength = %v, want 8", ml)
 	}
 
-	if got := strings.Join(s.Properties["source"].Enum, ","); got != "footer,blog,quiz" {
+	if got := fmt.Sprint(s.Properties["source"].Enum); got != "[footer blog quiz]" {
 		t.Errorf("source enum = %q", got)
 	}
 
@@ -163,5 +164,48 @@ func TestSchemaFor_CycleSafe(t *testing.T) {
 
 	if s.Properties["children"].Type != "array" {
 		t.Errorf("children should be an array")
+	}
+}
+
+func TestSchemaFor_DiveAppliesToElements(t *testing.T) {
+	type in struct {
+		Emails []string          `json:"emails" validate:"min=1,dive,email"`
+		Scores map[string]int    `json:"scores" validate:"dive,oneof=1 2"`
+		Raw    []string          `json:"raw"    validate:"dive"`
+		Keys   map[string]string `json:"keys"   validate:"dive,keys,min=2,endkeys,email"`
+	}
+
+	s := SchemaFor(reflect.TypeFor[in]())
+
+	emails := s.Properties["emails"]
+	if emails.Format != "" || emails.Items.Format != "email" {
+		t.Errorf("emails: array format %q, items format %q; want \"\" and email", emails.Format, emails.Items.Format)
+	}
+
+	if got := fmt.Sprint(s.Properties["scores"].AdditionalProperties.Enum); got != "[1 2]" {
+		t.Errorf("scores values enum = %s, want [1 2]", got)
+	}
+
+	if s.Properties["keys"].AdditionalProperties.Format != "" {
+		t.Error("map-key rules must not be applied to values")
+	}
+}
+
+func TestSchemaFor_ExampleIsTyped(t *testing.T) {
+	type in struct {
+		N   int     `json:"n"   example:"42"`
+		F   float64 `json:"f"   example:"1.5"`
+		B   bool    `json:"b"   example:"true"`
+		S   string  `json:"s"   example:"hi"`
+		Bad int     `json:"bad" example:"many"`
+	}
+
+	s := SchemaFor(reflect.TypeFor[in]())
+	want := map[string]any{"n": int64(42), "f": 1.5, "b": true, "s": "hi", "bad": "many"}
+
+	for name, ex := range want {
+		if got := s.Properties[name].Example; got != ex {
+			t.Errorf("%s example = %#v, want %#v", name, got, ex)
+		}
 	}
 }

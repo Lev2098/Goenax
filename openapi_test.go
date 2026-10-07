@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -307,5 +309,64 @@ func TestOpenAPI_AlsoJSONBodyAndRespHeader(t *testing.T) {
 
 	if r201, _ := resp["201"].(map[string]any); r201["headers"] == nil {
 		t.Error("201 success should carry the declared response header")
+	}
+}
+
+// Regression: two Errors with one status used to overwrite each other.
+func TestOpenAPI_SameStatusErrorsMerge(t *testing.T) {
+	r := New()
+	r.Add(Define("POST", "/users/{id}",
+		PathParam("id", "x"),
+		Error(400, "a", "first"), Error(400, "b", "second"), Error(404, "nf", "")))
+
+	out, err := r.OpenAPI(Info{Title: "t", Version: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var doc struct {
+		Paths map[string]map[string]struct {
+			OperationID string `json:"operationId"`
+			Responses   map[string]struct {
+				Description string `json:"description"`
+			} `json:"responses"`
+		} `json:"paths"`
+	}
+
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	op := doc.Paths["/users/{id}"]["post"]
+	if got := op.Responses["400"].Description; got != "first; second" {
+		t.Errorf("400 description = %q, want %q", got, "first; second")
+	}
+
+	if got := op.Responses["404"].Description; got != "nf" {
+		t.Errorf("404 description = %q, want code fallback %q", got, "nf")
+	}
+
+	if op.OperationID != "post_users_id" {
+		t.Errorf("operationId = %q, want post_users_id", op.OperationID)
+	}
+}
+
+type apiError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func TestOpenAPI_CustomErrorType(t *testing.T) {
+	r := New()
+	r.Add(Define("POST", "/x", Error(400, "bad", "bad input")))
+
+	out, err := r.OpenAPI(Info{Title: "t", Version: "1", ErrorType: reflect.TypeFor[apiError]()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := string(out)
+	if !strings.Contains(body, `"$ref": "#/components/schemas/apiError"`) || !strings.Contains(body, `"code"`) {
+		t.Errorf("custom error schema not used:\n%s", body)
 	}
 }

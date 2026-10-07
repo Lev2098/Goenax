@@ -111,30 +111,82 @@ go-playground `validate` tags:
 | `validate:"required"` | required |
 | `validate:"email"` / `"uuid"` / `"url"` | `format` |
 | `validate:"min/max/len"` | `minLength`/`maxLength` or `minimum`/`maximum` |
-| `validate:"oneof=a b c"` | `enum` |
-| `example:"…"` | `example` (else a deterministic default) |
+| `validate:"oneof=a b c"` | `enum` (typed: `oneof=1 2` on an `int` is `[1, 2]`) |
+| `validate:"dive,…"` | rules after `dive` apply to array items / map values |
+| `example:"…"` | `example`, typed to the field (`example:"42"` on an `int` is `42`); else a deterministic default |
 | `time.Time` / `[]T` / `map[string]T` | `date-time` / `array` / object with `additionalProperties` |
 | named `struct` | a `$ref` into `components/schemas` (defined once, shared) |
 
 It is cycle-safe and gives every leaf a deterministic example, so a generated
 Postman collection is stable across runs.
 
+A field without `omitempty` that isn't a pointer is `required` — in requests as
+well as responses. Make an optional request field a pointer or `omitempty`.
+
+Every `Error` documents the same JSON body — `{ "message": "…" }` by default.
+If your API returns something else, give its type once:
+
+```go
+reg.OpenAPI(goenax.Info{Title: "My API", Version: "1.0.0",
+    ErrorType: reflect.TypeFor[APIError]()})
+```
+
 ---
 
 ## Adapters
 
-Same shape for every framework — `New`, `Group`, `Handle`/`GET`/`POST`/`DELETE`.
-Each mounts the route **and** records the contract. Only the adapter imports the
-framework.
+Same shape for every framework — `New`, `Group`, `Handle`/`GET`/`POST`/`PUT`/
+`PATCH`/`DELETE`, `Docs`. Each mounts the route **and** records the contract.
+Only the adapter imports the framework.
 
 ```go
-echoadapter.New(e.Group("/api"), reg, "/api")   // *echo.Echo / *echo.Group
+echoadapter.New(e.Group("/api"), reg, "/api")   // pass the already-prefixed Echo group
 nethttpadapter.New(mux, reg, "/api")             // *http.ServeMux (Go 1.22+ patterns)
-ginadapter.New(engine, reg, "/api")              // gin.IRouter
+ginadapter.New(engine, reg, "/api")              // pass the unprefixed router; New creates the group
 ```
+
+Write paths in the framework's own syntax — `/users/:id` on Echo/Gin,
+`/users/{id}` on net/http. The registry stores them in OpenAPI form
+(`/users/{id}`; see `goenax.NormalizePath`), so `PathParam("id", …)`, the spec
+and `Coverage` all line up.
 
 Middleware uses each framework's native type. `echoadapter.Routes(e)` /
 `ginadapter.Routes(engine)` list the registered routes for `Coverage` (below).
+
+---
+
+## Live docs (`/docs`)
+
+Like FastAPI, the running service can serve its own contract — the spec comes
+from the same registry the routes were mounted through, so it always describes
+exactly what this build serves.
+
+```go
+api.Docs("/docs", goenax.Docs(reg, goenax.Info{
+    Title:   "My API",
+    Version: version, // e.g. set via -ldflags, so /docs shows which build answers
+}), requireStaff)
+```
+
+- `GET /api/docs` — interactive UI; `GET /api/docs/openapi.json` — the spec.
+- UI: `goenax.WithUI(goenax.SwaggerUI)` (default), `goenax.Scalar` or
+  `goenax.Redoc`. Assets load from the jsDelivr CDN.
+- The spec is built lazily, cached until the registry changes, and served with an
+  `ETag`.
+- Leave `Info.Servers` empty: "Try it out" then calls whichever host served the
+  page, so one binary works on every environment.
+- The docs routes are not part of the spec and are ignored by `Coverage`. Use
+  `reg.Ignore(method, path)` for other intentionally undocumented routes
+  (health checks, metrics).
+- **The spec reveals every endpoint.** In production, guard it with middleware
+  or don't mount it (`if cfg.DocsEnabled { … }`).
+
+Without an adapter, `goenax.Docs` is a plain `http.Handler`: mount it on
+`path` and `path + "/openapi.json"`.
+
+For one portal across many services, let the portal *pull* each service's
+`/docs/openapi.json` (Swagger UI `urls`, Scalar, Backstage) — the service stays
+the source of truth.
 
 ---
 
@@ -142,9 +194,12 @@ Middleware uses each framework's native type. `echoadapter.Routes(e)` /
 
 Goenax gives you the checks; wire them into your tests and CI.
 
-- **`reg.Validate()`** — returns problems per endpoint: missing summary/owner/tag,
-  a mutating method with no error response, a duplicate method+path, or a path
-  `{token}` that doesn't match a declared `PathParam`. Fail CI on a non-empty
+- **`reg.Validate()`** — returns problems per endpoint: missing
+  summary/description/owner/tag, a mutating method with no error response, a
+  duplicate method+path, a path `{token}` that doesn't match a declared
+  `PathParam`, a status code claimed by two responses (e.g. `Also(200)` next
+  to a 200 success), or two routes producing the same `operationId`
+  (`/a-b` and `/a_b`). Several `Error`s on one status are fine — they merge. Fail CI on a non-empty
   result and documentation becomes a build requirement, not a reviewer's ask.
 - **`reg.ValidateResponse(method, path, body)`** — validates a real response
   against its declared `Response[T]` schema. Call it from a handler test and a
@@ -161,6 +216,49 @@ Goenax gives you the checks; wire them into your tests and CI.
 
 Postman and TypeScript come from the emitted OpenAPI via `openapi-to-postman` and
 `openapi-typescript` — Goenax doesn't reinvent them.
+
+---
+
+## Changelog
+
+### Unreleased (since v0.1.0)
+
+**New**
+
+- **Live docs** — `goenax.Docs(reg, info)` serves the spec at `…/openapi.json`
+  plus a Swagger UI / Scalar / Redoc page; mount it with the adapters' `Docs`
+  method. See [Live docs](#live-docs-docs).
+- `reg.Ignore(method, path)` keeps health checks, metrics and the docs routes
+  out of `Coverage`.
+- `goenax.NormalizePath` — router syntax (`:id`, `*file`, `{p...}`) to OpenAPI
+  (`{id}`).
+- `Info.ErrorType` — document your own error body instead of `{ "message" }`.
+- `validate:"dive,…"` rules are applied to array items / map values.
+- `PUT` and `PATCH` helpers on every adapter.
+- `Registry` is safe for concurrent use.
+
+**Fixed**
+
+- Gin: a nested `Group` mounted routes with the prefix applied twice
+  (`/v1/api/v1/…`) while the spec said `/api/v1/…`.
+- Echo/Gin: `:id` path params were recorded verbatim — an invalid OpenAPI path,
+  a false `Validate` error, and a `Coverage` mismatch. They are now `{id}`.
+- `oneof` on a number field produced a string enum, so `ValidateResponse`
+  rejected every valid value.
+- Several `Error`s with one status overwrote each other; their descriptions now
+  merge, and `Validate` flags a status claimed by two different responses.
+- `ValidateResponse` accepted `1.5` for an integer field.
+- `Lookup` was case-sensitive on the method.
+- `operationId` contained `{` `}`; `Validate` now also flags `operationId`
+  collisions.
+- `example` tags on number/bool fields were emitted as strings.
+
+**Breaking**
+
+- `Schema.Enum` is `[]any` (was `[]string`) so enums carry the field's type.
+- `Registry.Add` stores the method upper-cased and the path in OpenAPI form.
+- `ginadapter.New` creates the prefixed group itself — pass the *unprefixed*
+  router, `New(engine, reg, "/api")` (as the README always showed).
 
 ---
 

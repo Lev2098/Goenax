@@ -5,8 +5,8 @@
 // TypeScript). Because the request/response schemas are taken from real Go
 // types, the contract cannot lie about the shapes the handler binds and returns.
 //
-// The package is deliberately self-contained (standard library only) so it can
-// later be lifted into its own module/repo with no untangling. See DESIGN.md.
+// The core package uses only the standard library; framework integration lives
+// in the adapter packages (adapter/echo, adapter/gin, adapter/nethttp).
 package goenax
 
 import "reflect"
@@ -41,9 +41,9 @@ type ResponseHeader struct {
 }
 
 // Endpoint is the full contract of a single route: how it is called plus the
-// metadata our policy gate requires. Request and Response hold the Go types of
-// the bodies (nil when there is none); their JSON schemas are derived from those
-// types in a later phase.
+// metadata Validate requires. Request and Response hold the Go types of the
+// bodies (nil when there is none); their JSON schemas are derived from those
+// types when the spec is built.
 type Endpoint struct {
 	Method string
 	Path   string
@@ -196,9 +196,8 @@ func Compose(opts ...Option) Option {
 }
 
 // Define assembles an Endpoint from a method, path, and options. Status defaults
-// to 200 unless an option overrides it. Define does no validation — enforcing
-// required metadata is the policy gate's job in a later phase; here we only
-// build the declaration.
+// to 200 unless an option overrides it. Define does no validation — that is
+// Validate's job; here we only build the declaration.
 func Define(method, path string, opts ...Option) Endpoint {
 	e := Endpoint{Method: method, Path: path, Status: 200}
 	for _, opt := range opts {

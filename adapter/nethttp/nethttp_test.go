@@ -61,3 +61,37 @@ func TestRouter_MountsRouteAndRecordsContract(t *testing.T) {
 		t.Errorf("summary = %q, want %q", ep.Summary, "Send a contact message")
 	}
 }
+
+func TestRouter_DocsServesSpecAndStaysOutOfIt(t *testing.T) {
+	mux := http.NewServeMux()
+	reg := goenax.New()
+	api := nethttpadapter.New(mux, reg, "/api")
+
+	api.GET("/ping", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }, nil)
+	api.Docs("/docs", goenax.Docs(reg, goenax.Info{Title: "T", Version: "1"}))
+
+	for _, p := range []string{"/api/docs", "/api/docs/"} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200", p, rec.Code)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/docs/openapi.json", nil))
+
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"/api/ping"`) {
+		t.Fatalf("spec = %d %s", rec.Code, rec.Body.String())
+	}
+
+	if strings.Contains(rec.Body.String(), "/api/docs") {
+		t.Error("docs routes leaked into the spec")
+	}
+
+	und, _ := reg.Coverage([]goenax.Route{{Method: "GET", Path: "/api/ping"}, {Method: "GET", Path: "/api/docs"}})
+	if len(und) != 0 {
+		t.Errorf("undocumented = %v, want none", und)
+	}
+}
