@@ -186,12 +186,17 @@ func htmlContent() map[string]mediaType {
 func paramsOf(params []Param) []parameter {
 	out := make([]parameter, 0, len(params))
 	for _, p := range params {
+		schema := p.Schema
+		if schema == nil {
+			schema = &Schema{Type: typeString}
+		}
+
 		out = append(out, parameter{
 			Name:        p.Name,
 			In:          p.In,
 			Required:    p.Required,
 			Description: p.Desc,
-			Schema:      &Schema{Type: typeString},
+			Schema:      schema,
 		})
 	}
 

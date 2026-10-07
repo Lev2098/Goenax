@@ -1,6 +1,7 @@
 package goenax
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -202,6 +203,69 @@ func TestSchemaFor_ExampleIsTyped(t *testing.T) {
 
 	s := SchemaFor(reflect.TypeFor[in]())
 	want := map[string]any{"n": int64(42), "f": 1.5, "b": true, "s": "hi", "bad": "many"}
+
+	for name, ex := range want {
+		if got := s.Properties[name].Example; got != ex {
+			t.Errorf("%s example = %#v, want %#v", name, got, ex)
+		}
+	}
+}
+
+// Regression: an unexported embedded struct was skipped, though encoding/json
+// promotes its exported fields into the object.
+func TestSchemaFor_UnexportedEmbeddedStructIsFlattened(t *testing.T) {
+	type page struct {
+		Total int `json:"total"`
+	}
+
+	type hiddenPtr struct {
+		Secret string `json:"secret"`
+	}
+
+	type resp struct {
+		page
+		*hiddenPtr
+
+		Items []string `json:"items"`
+	}
+
+	raw, err := json.Marshal(resp{page: page{Total: 1}, hiddenPtr: &hiddenPtr{Secret: "s"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+
+	s := SchemaFor(reflect.TypeFor[resp]())
+	for name := range wire {
+		if s.Properties[name] == nil {
+			t.Errorf("encoding/json emits %q but the schema lacks it", name)
+		}
+	}
+
+	for name := range s.Properties {
+		if _, ok := wire[name]; !ok {
+			t.Errorf("schema has %q but encoding/json never emits it", name)
+		}
+	}
+}
+
+// Generated examples must satisfy their own constraints, or Swagger's
+// "Try it out" sends an invalid request by default.
+func TestSchemaFor_DefaultExamplesRespectBounds(t *testing.T) {
+	type in struct {
+		Limit int     `json:"limit" validate:"min=1,max=100"`
+		Neg   int     `json:"neg"   validate:"max=-5"`
+		Ratio float64 `json:"ratio" validate:"min=2"`
+		Code  string  `json:"code"  validate:"max=3"`
+		Pin   string  `json:"pin"   validate:"len=4"`
+	}
+
+	s := SchemaFor(reflect.TypeFor[in]())
+	want := map[string]any{"limit": int64(1), "neg": int64(-5), "ratio": 2.0, "code": "exa", "pin": "exam"}
 
 	for name, ex := range want {
 		if got := s.Properties[name].Example; got != ex {

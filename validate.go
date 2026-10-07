@@ -41,6 +41,7 @@ func (r *Registry) Validate() []ValidationError {
 		problems := missingMetadata(e)
 		problems = append(problems, pathParamProblems(e)...)
 		problems = append(problems, statusProblems(e)...)
+		problems = append(problems, duplicateParams(e)...)
 
 		route := strings.ToUpper(e.Method) + " " + e.Path
 		if seen[route] {
@@ -96,7 +97,7 @@ func pathParamProblems(e Endpoint) []string {
 	declared := map[string]bool{}
 
 	for _, p := range e.Params {
-		if p.In == "path" {
+		if p.In == inPath {
 			declared[p.Name] = true
 		}
 	}
@@ -158,6 +159,29 @@ func statusProblems(e Endpoint) []string {
 	problems := make([]string, 0, len(conflicts))
 	for _, status := range conflicts {
 		problems = append(problems, "status "+strconv.Itoa(status)+" declared by more than one response")
+	}
+
+	return problems
+}
+
+// duplicateParams flags a parameter declared twice in one location, e.g. by
+// Params[T] and a hand-written Query with the same name.
+func duplicateParams(e Endpoint) []string {
+	seen := map[string]bool{}
+
+	var problems []string
+
+	for _, p := range e.Params {
+		k := p.In + " " + p.Name
+		if p.In == inHeader {
+			k = p.In + " " + strings.ToLower(p.Name) // header names are case-insensitive
+		}
+
+		if seen[k] {
+			problems = append(problems, "duplicate "+p.In+" parameter "+p.Name)
+		}
+
+		seen[k] = true
 	}
 
 	return problems
