@@ -3,6 +3,7 @@ package goenax
 import (
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -22,17 +23,24 @@ func (e ValidationError) Error() string {
 //
 // Policy (kept small, not bureaucratic): every endpoint needs a summary,
 // description, owner and tag; mutating methods need at least one error response.
-// Structural: no two endpoints share a method+path, and path {tokens} match the
-// declared PathParam names. Request bodies and the success status are not
+// Structural: no two endpoints share a method+path, path {tokens} match the
+// declared PathParam names, and no status code is claimed by two different
+// responses (success / Also / Error) — OpenAPI keys responses by status, so one
+// would silently overwrite the other. Several Errors on one status are fine:
+// they are merged into one documented response. Request bodies and the success status are not
 // checked (action POSTs carry no body; the status is auto-defaulted).
 func (r *Registry) Validate() []ValidationError {
 	var errs []ValidationError
 
 	seen := map[string]bool{}
+	opIDs := map[string]string{} // operationId -> first route that produced it
 
-	for _, e := range r.endpoints {
+	eps := r.snapshot()
+
+	for _, e := range eps {
 		problems := missingMetadata(e)
 		problems = append(problems, pathParamProblems(e)...)
+		problems = append(problems, statusProblems(e)...)
 
 		route := strings.ToUpper(e.Method) + " " + e.Path
 		if seen[route] {
@@ -40,6 +48,13 @@ func (r *Registry) Validate() []ValidationError {
 		}
 
 		seen[route] = true
+
+		id := operationID(e.Method, e.Path)
+		if first, taken := opIDs[id]; taken && first != route {
+			problems = append(problems, "operationId "+id+" collides with "+first)
+		} else if !taken {
+			opIDs[id] = route
+		}
 
 		if len(problems) > 0 {
 			errs = append(errs, ValidationError{Endpoint: e.Method + " " + e.Path, Problems: problems})
@@ -107,6 +122,42 @@ func pathParamProblems(e Endpoint) []string {
 
 	for _, name := range leftover {
 		problems = append(problems, "path parameter "+name+" not in the path")
+	}
+
+	return problems
+}
+
+// statusProblems flags a status code declared by more than one kind of response:
+// the success, each Also, and the Errors (which count once, as a group).
+func statusProblems(e Endpoint) []string {
+	owners := map[int]int{e.Status: 1}
+
+	for _, ex := range e.Also {
+		owners[ex.Status]++
+	}
+
+	errStatuses := map[int]bool{}
+	for _, er := range e.Errors {
+		errStatuses[er.Status] = true
+	}
+
+	for status := range errStatuses {
+		owners[status]++
+	}
+
+	var conflicts []int
+
+	for status, n := range owners {
+		if n > 1 {
+			conflicts = append(conflicts, status)
+		}
+	}
+
+	sort.Ints(conflicts)
+
+	problems := make([]string, 0, len(conflicts))
+	for _, status := range conflicts {
+		problems = append(problems, "status "+strconv.Itoa(status)+" declared by more than one response")
 	}
 
 	return problems

@@ -77,3 +77,60 @@ func TestRoutes_CoverageCatchesAdHocRoute(t *testing.T) {
 		t.Fatalf("undocumented = %v, want [/api/rogue]", undocumented)
 	}
 }
+
+// Regression: Echo's ":id" used to be recorded verbatim, so the spec had an
+// invalid path and Validate reported the declared PathParam as missing.
+func TestRouter_ColonParamRecordedInOpenAPIForm(t *testing.T) {
+	e := echo.New()
+	reg := goenax.New()
+	api := echoadapter.New(e.Group("/api"), reg, "/api")
+
+	api.GET("/users/:id", func(c echo.Context) error { return c.String(http.StatusOK, c.Param("id")) },
+		[]goenax.Option{
+			goenax.Summary("s"), goenax.Description("d"), goenax.Owner("#o"), goenax.Tags("T"),
+			goenax.PathParam("id", "user id"),
+		})
+
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/users/7", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/users/7 = %d, want 200", rec.Code)
+	}
+
+	if errs := reg.Validate(); len(errs) != 0 {
+		t.Errorf("Validate() = %v, want none", errs)
+	}
+
+	und, unm := reg.Coverage(echoadapter.Routes(e))
+	if len(und) != 0 || len(unm) != 0 {
+		t.Errorf("coverage undocumented=%v unmounted=%v, want both empty", und, unm)
+	}
+}
+
+func TestRouter_DocsServesSpecAndStaysOutOfIt(t *testing.T) {
+	e := echo.New()
+	reg := goenax.New()
+	api := echoadapter.New(e.Group("/api"), reg, "/api")
+
+	api.GET("/ping", func(c echo.Context) error { return c.NoContent(http.StatusOK) }, nil)
+	api.Docs("/docs", goenax.Docs(reg, goenax.Info{Title: "T", Version: "1"}))
+
+	for _, p := range []string{"/api/docs", "/api/docs/", "/api/docs/openapi.json"} {
+		rec := httptest.NewRecorder()
+		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200", p, rec.Code)
+		}
+	}
+
+	if n := len(reg.Endpoints()); n != 1 {
+		t.Errorf("registry has %d endpoints, want 1 (docs must not be recorded)", n)
+	}
+
+	und, unm := reg.Coverage(echoadapter.Routes(e))
+	if len(und) != 0 || len(unm) != 0 {
+		t.Errorf("coverage undocumented=%v unmounted=%v, want both empty", und, unm)
+	}
+}

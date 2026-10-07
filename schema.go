@@ -33,7 +33,7 @@ type Schema struct {
 	Ref                  string             `json:"$ref,omitempty"`
 	Type                 string             `json:"type,omitempty"`
 	Format               string             `json:"format,omitempty"`
-	Enum                 []string           `json:"enum,omitempty"`
+	Enum                 []any              `json:"enum,omitempty"` // typed to match Type (string / int64 / float64)
 	Example              any                `json:"example,omitempty"`
 	MinLength            *int               `json:"minLength,omitempty"`
 	MaxLength            *int               `json:"maxLength,omitempty"`
@@ -177,12 +177,13 @@ func (b *builder) structSchema(t reflect.Type) Schema {
 		}
 
 		fs := b.of(f.Type)
-		rules := parseValidateTag(f)
+		rules, elemRules := parseValidateTag(f)
 
 		// A $ref node must stand alone; only enrich inline (leaf) schemas.
 		if fs.Ref == "" {
 			applyRules(&fs, rules)
 			setExample(&fs, f.Tag.Get("example"))
+			applyElemRules(&fs, elemRules)
 		}
 
 		s.Properties[name] = &fs
@@ -215,21 +216,58 @@ func isRequired(f reflect.StructField, omitempty bool, rules map[string]string) 
 	return !omitempty && f.Type.Kind() != reflect.Pointer
 }
 
-// parseValidateTag reads a go-playground/validator tag into a rule map, e.g.
+// parseValidateTag reads a go-playground/validator tag into rule maps, e.g.
 // `validate:"required,email,min=8"` -> {required:"", email:"", min:"8"}.
-func parseValidateTag(f reflect.StructField) map[string]string {
-	rules := map[string]string{}
+// Rules after `dive` apply to the elements of a slice/map, not the field
+// itself: `validate:"min=1,dive,email"` -> rules {min:"1"}, elem {email:""}.
+func parseValidateTag(f reflect.StructField) (rules, elem map[string]string) {
+	rules, elem = map[string]string{}, map[string]string{}
+	target, dived := rules, false
 
 	for part := range strings.SplitSeq(f.Tag.Get("validate"), ",") {
 		if part == "" {
 			continue
 		}
 
+		if part == "dive" {
+			if dived {
+				break // nested dive (slice of slices) — not mapped
+			}
+
+			target, dived = elem, true
+
+			continue
+		}
+
 		key, val, _ := strings.Cut(part, "=")
-		rules[key] = val
+		target[key] = val
 	}
 
-	return rules
+	return rules, elem
+}
+
+// applyElemRules applies the rules after `dive` to an array's items or a map's
+// values. Map-key rules (`keys … endkeys`) are not mapped.
+func applyElemRules(s *Schema, elem map[string]string) {
+	if len(elem) == 0 {
+		return
+	}
+
+	if _, ok := elem["keys"]; ok {
+		return
+	}
+
+	target := s.Items
+	if target == nil {
+		target = s.AdditionalProperties
+	}
+
+	if target == nil || target.Ref != "" {
+		return
+	}
+
+	applyRules(target, elem)
+	setExample(target, "")
 }
 
 func applyRules(s *Schema, rules map[string]string) {
@@ -242,7 +280,7 @@ func applyRules(s *Schema, rules map[string]string) {
 		case "url", formatURI:
 			s.Format = formatURI
 		case "oneof":
-			s.Enum = strings.Fields(val)
+			s.Enum = enumValues(s.Type, val)
 		case "min":
 			applyBound(s, val, true)
 		case "max":
@@ -252,6 +290,42 @@ func applyRules(s *Schema, rules map[string]string) {
 			applyBound(s, val, false)
 		}
 	}
+}
+
+// enumValues parses a `oneof` list into values of the schema's type, so an
+// integer field gets `enum: [1, 2, 3]` rather than strings. A value that does not
+// parse as the field's type is kept as a string (the schema is then honest about
+// the mismatch instead of silently dropping it).
+func enumValues(typ, list string) []any {
+	words := strings.Fields(list)
+	out := make([]any, 0, len(words))
+
+	for _, w := range words {
+		out = append(out, scalarValue(typ, w))
+	}
+
+	return out
+}
+
+// scalarValue parses a tag word (enum entry, example) as the schema's type, so
+// an integer field gets 42 rather than "42". Unparsable words stay strings.
+func scalarValue(typ, w string) any {
+	switch typ {
+	case typeInteger:
+		if n, err := strconv.ParseInt(w, 10, 64); err == nil {
+			return n
+		}
+	case typeNumber:
+		if f, err := strconv.ParseFloat(w, 64); err == nil {
+			return f
+		}
+	case typeBoolean:
+		if b, err := strconv.ParseBool(w); err == nil {
+			return b
+		}
+	}
+
+	return w
 }
 
 // applyBound maps a min/max to minLength/maxLength for strings and
@@ -286,7 +360,7 @@ func applyBound(s *Schema, val string, lower bool) {
 func setExample(s *Schema, tagVal string) {
 	switch {
 	case tagVal != "":
-		s.Example = tagVal
+		s.Example = scalarValue(s.Type, tagVal)
 	case len(s.Enum) > 0:
 		s.Example = s.Enum[0]
 	case s.Type == typeString:

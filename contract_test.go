@@ -94,3 +94,44 @@ func TestValidateResponse_NoBodyEndpoint(t *testing.T) {
 		t.Error("a body on a no-content endpoint should fail")
 	}
 }
+
+type cLevel struct {
+	Level int     `json:"level" validate:"oneof=1 2 3"`
+	Ratio float64 `json:"ratio" validate:"oneof=0.5 1.5"`
+}
+
+// Regression: a numeric oneof used to become a string enum, so every valid
+// response was rejected ("2 is not one of 1, 2, 3").
+func TestValidateResponse_NumericEnum(t *testing.T) {
+	r := New()
+	r.Add(Define("GET", "/lvl", Response[cLevel](200)))
+
+	if err := r.ValidateResponse("GET", "/lvl", []byte(`{"level":2,"ratio":1.5}`)); err != nil {
+		t.Errorf("valid numeric enum rejected: %v", err)
+	}
+
+	if err := r.ValidateResponse("GET", "/lvl", []byte(`{"level":4,"ratio":1.5}`)); err == nil {
+		t.Error("level 4 accepted, want enum error")
+	}
+
+	if err := r.ValidateResponse("GET", "/lvl", []byte(`{"level":"2","ratio":1.5}`)); err == nil {
+		t.Error(`level "2" (string) accepted, want enum error`)
+	}
+}
+
+func TestValidateResponse_IntegerRejectsFraction(t *testing.T) {
+	type n struct {
+		Count int `json:"count"`
+	}
+
+	r := New()
+	r.Add(Define("GET", "/n", Response[n](200)))
+
+	if err := r.ValidateResponse("GET", "/n", []byte(`{"count":1.5}`)); err == nil {
+		t.Error("count 1.5 accepted for an integer field")
+	}
+
+	if err := r.ValidateResponse("GET", "/n", []byte(`{"count":2}`)); err != nil {
+		t.Errorf("count 2 rejected: %v", err)
+	}
+}
