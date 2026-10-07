@@ -221,7 +221,7 @@ Postman and TypeScript come from the emitted OpenAPI via `openapi-to-postman` an
 
 ## Changelog
 
-### Unreleased (since v0.1.0)
+### v0.2.0 — 2026-10-07
 
 **New**
 
